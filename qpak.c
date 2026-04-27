@@ -1,13 +1,52 @@
-//#include <conio.h>
+// requires C11 (or C++11)
+
 #include <ctype.h>
-//#include <direct.h>
-//#include <malloc.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#include <stdint.h>
+#include <assert.h>
 
 #ifdef _WIN64
 #pragma comment(lib,"bufferoverflowu")
+#else
+#include <linux/limits.h>
+#include <sys/stat.h>
+#define __cdecl
+
+#define _MAX_DRIVE 2
+#define _MAX_DIR PATH_MAX
+#define _MAX_FNAME PATH_MAX
+#define _MAX_EXT PATH_MAX
+void _splitpath(char *path, char *drive, char *dir, char *fname, char *ext)
+{
+	*drive = *path == '/'? '/': '\0';  // but actually n/a in linux
+	drive[1] = '\0';
+	char *last_sep = strrchr(path, '/');
+	if(last_sep == NULL)
+		*dir = '\0';
+	else
+	{
+		int dir_len = last_sep - path;
+ 		strncpy(dir, path, dir_len);
+   		dir[dir_len] = '\0';
+	}
+	char *dot = strrchr(path, '.');
+	if(dot == NULL)
+	{
+		*ext = '\0';
+		strcpy(fname, last_sep + 1);
+	}
+	else
+	{
+		strcpy(ext, dot);
+		int name_len = dot - last_sep - 1;
+		strncpy(fname, last_sep + 1, name_len);
+		fname[name_len] = '\0';
+	}
+}
+int _mkdir(char *dir) { return mkdir(dir, 0775); }
 #endif
 
 #define PATTERN_VALID  0 // valid pattern
@@ -184,11 +223,11 @@ int is_valid_pattern (char *p, int *error_type)
 *
 ----------------------------------------------------------------------------*/
 
-int matche_after_star (register char *pattern, register char *text);
+int matche_after_star (char *pattern, char *text);
 
-int matche (register char *p, register char *t)
+int matche (char *p, char *t)
 {
-  register char range_start, range_end;  /* start and end in range */
+  char range_start, range_end;  /* start and end in range */
 
   char invert;     /* is this [..] or [!..] */
   char member_match;   /* have I matched the [..] construct? */
@@ -382,10 +421,10 @@ int matche (register char *p, register char *t)
 *
 ----------------------------------------------------------------------------*/
 
-int matche_after_star (register char *p, register char *t)
+int matche_after_star (char *p, char *t)
 {
-  register int match = 0;
-  register char nextp;
+  int match = 0;
+  char nextp;
 
   /* pass over existing ? and * in pattern */
 
@@ -467,15 +506,16 @@ char match( char *p, char *t )
 #pragma pack(push, 1)
   struct header
   {
-    long magic;
-    long entriesloc;
-    long entriesnum;
+    uint32_t magic;
+    uint32_t entriesloc;
+    uint32_t entriesnum;
   };
+  static_assert(sizeof(struct header) == 12, "PAK header should be 12 bytes");
   struct entry
   {
-    char name[56];
-    long position;
-    long size;
+    char     name[56];
+    uint32_t position;
+    uint32_t size;
   };
 #pragma pack(pop)
 
@@ -486,7 +526,7 @@ FILE *openpakfile(char *pakname)
   FILE *pak = fopen(pakname, "rb");
 
   if(pak == NULL)
-    printf("open failed! %s.\n", _sys_errlist[errno]);
+    printf("open failed! %s.\n", strerror(errno));
   else
     printf("success!\n");
 
@@ -499,7 +539,7 @@ int verifyheader(struct header *header, FILE *pak)
 
   if(fread(header, sizeof(struct header), 1, pak) == 0 || ferror(pak) != 0)
   {
-    printf("read failed! %s.\n", errno ? _sys_errlist[errno] : "Not enough bytes read");
+    printf("read failed! %s.\n", errno ? strerror(errno) : "Not enough bytes read");
     return 0;
   }
 
@@ -530,7 +570,7 @@ struct entry *getpakentries(struct header *header, FILE *pak)
     return NULL;
   }
 
-  struct entry *entries = calloc(sizeof(struct entry), header->entriesnum);
+  struct entry *entries = (struct entry *)calloc(sizeof(struct entry), header->entriesnum);
 
   if(entries == NULL)
   {
@@ -544,7 +584,7 @@ struct entry *getpakentries(struct header *header, FILE *pak)
 
   if(items != numitems || ferror(pak))
   {
-    printf("Read only %zu of %zu items, %s!\n", items, numitems, errno ? _sys_errlist[errno] : "Not enough bytes read");
+    printf("Read only %zu of %zu items, %s!\n", items, numitems, errno ? strerror(errno) : "Not enough bytes read");
     free(entries);
     return NULL;
   }
@@ -559,7 +599,7 @@ void buildpathstructure(char *name)
   char dir[_MAX_DIR];
   char file[_MAX_FNAME];
   char ext[_MAX_EXT];
-  char path[_MAX_PATH];
+  char path[PATH_MAX];
 
   memset(path, 0, sizeof(path));
 
@@ -609,7 +649,7 @@ int extract(char *pakname, char **files)
       out = fopen(entryptr->name, "wb");
       if(out == NULL)
       {
-        printf("create failed! %s.\n", _sys_errlist[errno]);
+        printf("create failed! %s.\n", strerror(errno));
         ++numerrors;
         continue;
       }
@@ -621,17 +661,17 @@ int extract(char *pakname, char **files)
       }
       else if(fseek(pak, entryptr->position, SEEK_SET) != 0)
       {
-        printf("seek @%u failed in pak! %s.\n", entryptr->position, _sys_errlist[errno]);
+        printf("seek @%u failed in pak! %s.\n", entryptr->position, strerror(errno));
         ++numerrors;
       }
       else if(entryptr->size > 0 && fread(buffer, entryptr->size, 1, pak) != 1)
       {
-        printf("read pak failed! %s.\n", _sys_errlist[errno]);
+        printf("read pak failed! %s.\n", strerror(errno));
         ++numerrors;
       }
       else if(entryptr->size > 0 && fwrite(buffer, entryptr->size, 1, out) != 1)
       {
-        printf("write failed! %s.\n", _sys_errlist[errno]);
+        printf("write failed! %s.\n", strerror(errno));
         ++numerrors;
       }
       else
@@ -666,7 +706,7 @@ int list(char *filelistname, char *pakname, char **files)
   pak = fopen(filelistname, "wt");
   if(pak == NULL)
   {
-    printf("create failed! %s.\n", _sys_errlist[errno]);
+    printf("create failed! %s.\n", strerror(errno));
     return 7;
   }
   printf("success!\nWriting entries from pak file... ");
@@ -729,7 +769,7 @@ int pack(char *filelistname, char *pakname)
   FILE *filelist = fopen(filelistname, "rt");
   if(filelist == NULL)
   {
-    printf("open failed! %s.\n", _sys_errlist[errno]);
+    printf("open failed! %s.\n", strerror(errno));
     return 1;
   }
   printf("success!\n");
@@ -778,14 +818,14 @@ int pack(char *filelistname, char *pakname)
     entries = (struct entry**)realloc(entries, (header.entriesnum + 1) * sizeof(void*));
     if(entries == NULL)
     {
-      printf("Error %u allocating file entry address space, %s.\n", errno, _sys_errlist[errno]);
+      printf("Error %u allocating file entry address space, %s.\n", errno, strerror(errno));
       return 4;
     }
     entries[header.entriesnum] = (struct entry*)malloc(sizeof(struct entry));
     memset(entries[header.entriesnum], 0, sizeof(struct entry));
     if(entries[header.entriesnum] == NULL)
     {
-      printf("Error %u allocating file entry structure, %s.\n", errno, _sys_errlist[errno]);
+      printf("Error %u allocating file entry structure, %s.\n", errno, strerror(errno));
       return 5;
     }
     strncpy(entries[header.entriesnum]->name, buffer, 55);
@@ -793,12 +833,12 @@ int pack(char *filelistname, char *pakname)
     entry = fopen(entries[header.entriesnum]->name, "rb");
     if(entry == NULL)
     {
-      printf("open failed! %s.\n", _sys_errlist[errno]);
+      printf("open failed! %s.\n", strerror(errno));
       return 7;
     }
     if(fseek(entry, 0, SEEK_END) != 0)
     {
-      printf("fseek failed! %s.\n", _sys_errlist[errno]);
+      printf("fseek failed! %s.\n", strerror(errno));
       return 8;
     }
     entries[header.entriesnum]->size = ftell(entry);
@@ -806,7 +846,7 @@ int pack(char *filelistname, char *pakname)
     header.entriesloc += entries[header.entriesnum]->size;
     if(fclose(entry) != 0)
     {
-      printf("fclose failed! %s.\n", _sys_errlist[errno]);
+      printf("fclose failed! %s.\n", strerror(errno));
       return 9;
     }
     printf("%ub @%u.\n", entries[header.entriesnum]->size, entries[header.entriesnum]->position);
@@ -824,7 +864,7 @@ int pack(char *filelistname, char *pakname)
   FILE *pak = fopen(pakname, "wb");
   if(pak == NULL)
   {
-    printf("create failed! %s.\n", _sys_errlist[errno]);
+    printf("create failed! %s.\n", strerror(errno));
     return 11;
   }
   header.magic = 0x4B434150;
@@ -832,7 +872,7 @@ int pack(char *filelistname, char *pakname)
   printf("success!\nEntry table is %ub @%u.\nWriting initial header data... ", header.entriesnum, header.entriesloc);
   if(fwrite(&header, sizeof(header), 1, pak) != 1 || ferror(pak) != 0)
   {
-    printf("write failed! %s.\n", _sys_errlist[errno]);
+    printf("write failed! %s.\n", strerror(errno));
     return 12;
   }
   header.entriesnum /= sizeof(struct entry);
@@ -841,7 +881,7 @@ int pack(char *filelistname, char *pakname)
   printf("success!\n");
   for(index = 0; index < header.entriesnum; ++index)
   {
-    printf("Packing %u/%u; %s (%ub @%u)... ", index + 1,  header.entriesnum, entries[index]->name, entries[index]->size, entries[index]->position);
+    printf("Packing %lu/%u; %s (%ub @%u)... ", index + 1,  header.entriesnum, entries[index]->name, entries[index]->size, entries[index]->position);
     if(entries[index]->size == 0)
     {
       printf("skipped.\n");
@@ -850,29 +890,29 @@ int pack(char *filelistname, char *pakname)
     entry = fopen(entries[index]->name, "rb");
     if(entry == NULL)
     {
-      printf("open failed! %s.\n", sys_errlist[errno]);
+      printf("open failed! %s.\n", strerror(errno));
       return 13;
     }
     databuffer = (char*)malloc(entries[index]->size);
     if(databuffer == NULL)
     {
-      printf("malloc failed! %s.\n", _sys_errlist[errno]);
+      printf("malloc failed! %s.\n", strerror(errno));
       return 14;
     }
     if(fread(databuffer, entries[index]->size, 1, entry) != 1 || ferror(entry) != 0)
     {
-      printf("read failed! %s.\n", _sys_errlist[errno]);
+      printf("read failed! %s.\n", strerror(errno));
       return 15;
     }
     if(fwrite(databuffer, entries[index]->size, 1, pak) != 1 || ferror(pak) != 0)
     {
-      printf("write failed! %s.\n", _sys_errlist[errno]);
+      printf("write failed! %s.\n", strerror(errno));
       return 16;
     }
     free(databuffer);
     if(fclose(entry) != 0)
     {
-      printf("close failed! %s.\n", _sys_errlist[errno]);
+      printf("close failed! %s.\n", strerror(errno));
       return 17;
     }
     printf("ok.\n");
@@ -882,7 +922,7 @@ int pack(char *filelistname, char *pakname)
   {
     if(fwrite(entries[index], sizeof(struct entry), 1, pak) != 1)
     {
-      printf("write failed! %s.\n", _sys_errlist[errno]);
+      printf("write failed! %s.\n", strerror(errno));
       return 18;
     }
     free(entries[index]);
@@ -890,10 +930,10 @@ int pack(char *filelistname, char *pakname)
   long paksize = ftell(pak);
   if(fclose(pak) != 0)
   {
-    printf("close failed! %s.\n", _sys_errlist[errno]);
+    printf("close failed! %s.\n", strerror(errno));
     return 19;
   }
-  printf("success!\nPackage %s is %u bytes containing %u files.\n", pakname, paksize, header.entriesnum);
+  printf("success!\nPackage %s is %lu bytes containing %u files.\n", pakname, paksize, header.entriesnum);
   free(entries);
 
   return 0;
